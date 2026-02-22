@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Trade Journal Migration Tool</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #080c14; color: #e2e8f0; padding: 40px; max-width: 800px; margin: 0 auto; }
+  h1 { color: #4e8ef7; margin-bottom: 8px; }
+  .sub { color: #94a3b8; margin-bottom: 30px; font-size: 14px; }
+  .card { background: #0c1220; border: 1px solid #1e2d47; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  .btn { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; }
+  .btn-primary { background: #4e8ef7; color: #fff; }
+  .btn-primary:hover { background: #3d7de8; }
+  .btn-danger { background: #f25f5c; color: #fff; }
+  .log { background: #080c14; border: 1px solid #1e2d47; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 13px; line-height: 1.6; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+  .ok  { color: #00d97e; }
+  .err { color: #f25f5c; }
+  .warn { color: #ffd166; }
+  .info { color: #94a3b8; }
+  .stat { display: inline-block; background: #111827; border: 1px solid #1e2d47; border-radius: 8px; padding: 10px 18px; margin: 4px; font-size: 13px; }
+  .stat strong { color: #4e8ef7; }
+</style>
+</head>
+<body>
+
+<h1>Trade Journal Migration Tool</h1>
+<p class="sub">Migrates trades from <code>tradeJournal_v1</code> (old journal) → <code>tj_trades</code> (new journal)</p>
+
+<div class="card">
+  <h2 style="margin-bottom:12px; font-size:15px;">Step 1 — Preview</h2>
+  <p style="color:#94a3b8; font-size:13px; margin-bottom:16px;">Click below to scan localStorage and preview what will be migrated.</p>
+  <button class="btn btn-primary" onclick="preview()">Preview Old Trades</button>
+</div>
+
+<div class="card" id="previewCard" style="display:none;">
+  <h2 style="margin-bottom:12px; font-size:15px;">Step 2 — Migrate</h2>
+  <div id="stats" style="margin-bottom:16px;"></div>
+  <p style="color:#ffd166; font-size:13px; margin-bottom:16px;">⚠️ This will <strong>add</strong> the old trades into <code>tj_trades</code>. Existing trades in the new journal are preserved. Duplicate IDs will be skipped.</p>
+  <button class="btn btn-primary" onclick="migrate()">Run Migration</button>
+</div>
+
+<div class="card" id="logCard" style="display:none;">
+  <h2 style="margin-bottom:12px; font-size:15px;">Migration Log</h2>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+// HELPERS
+// ──────────────────────────────────────────────
+
+function convertTime(timeStr) {
+  // "9:30 AM" or "10:05 PM" → "09:30" / "22:05"
+  if (!timeStr) return '';
+  const m = timeStr.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!m) return timeStr; // already in another format, pass through
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = m[3].toUpperCase();
+  if (ampm === 'PM' && h !== 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  return String(h).padStart(2, '0') + ':' + min;
+}
+
+function deriveSession(time24) {
+  // time24 = "HH:MM"
+  if (!time24) return 'NY Open (7AM-10AM)';
+  const h = parseInt(time24.split(':')[0], 10);
+  if (h < 2)  return 'Asia (8PM-12AM)';
+  if (h < 7)  return 'London (2AM-5AM)';
+  if (h < 10) return 'NY Open (7AM-10AM)';
+  if (h < 12) return 'NY AM (10AM-12PM)';
+  if (h < 14) return 'NY Lunch (12PM-2PM)';
+  return 'NY PM (2PM-4PM)';
+}
+
+function deriveOutcome(pnl) {
+  const n = parseFloat(pnl) || 0;
+  if (n > 0) return 'Win';
+  if (n < 0) return 'Loss';
+  return 'BE';
+}
+
+function convertTrade(old, dateKey) {
+  const time24 = convertTime(old.time);
+  return {
+    id:           old.id,
+    symbol:       old.ticker || '',
+    date:         old.dateKey || dateKey,
+    time:         time24,
+    session:      deriveSession(time24),
+    direction:    old.direction || 'Long',
+    entryPrice:   0,
+    stopLoss:     0,
+    takeProfit:   0,
+    exitPrice:    0,
+    size:         0,
+    risk:         0,
+    pnl:          parseFloat(old.pnl) || 0,
+    rr:           old.targetRR != null ? String(old.targetRR) : '',
+    outcome:      deriveOutcome(old.pnl),
+    confluences:  Array.isArray(old.confluences) ? old.confluences : [],
+    setupRating:  0,
+    execRating:   0,
+    emotion:      '',
+    notes:        old.notes || '',
+    mistakes:     '',
+    lesson:       ''
+  };
+}
+
+// ──────────────────────────────────────────────
+// LOGGING
+// ──────────────────────────────────────────────
+
+function log(msg, cls = 'info') {
+  const el = document.getElementById('log');
+  el.innerHTML += `<span class="${cls}">${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ──────────────────────────────────────────────
+// PREVIEW
+// ──────────────────────────────────────────────
+
+let convertedTrades = [];
+
+function preview() {
+  convertedTrades = [];
+  document.getElementById('previewCard').style.display = 'none';
+  document.getElementById('logCard').style.display = 'block';
+  document.getElementById('log').innerHTML = '';
+
+  const raw = localStorage.getItem('tradeJournal_v1');
+  if (!raw) {
+    log('❌ No data found under key "tradeJournal_v1". Make sure you open this file in the same browser where the old journal was used.', 'err');
+    return;
+  }
+
+  let state;
+  try { state = JSON.parse(raw); } catch(e) {
+    log('❌ Failed to parse tradeJournal_v1: ' + e.message, 'err');
+    return;
+  }
+
+  if (!state || !state.tradesByDate) {
+    log('❌ Unexpected data format — missing tradesByDate.', 'err');
+    return;
+  }
+
+  const dateKeys = Object.keys(state.tradesByDate);
+  log(`✔ Found ${dateKeys.length} trading days in old journal.`, 'ok');
+
+  for (const dk of dateKeys) {
+    const arr = state.tradesByDate[dk] || [];
+    for (const old of arr) {
+      const converted = convertTrade(old, dk);
+      convertedTrades.push(converted);
+      log(`  ${converted.date}  ${converted.symbol}  ${converted.direction}  PnL: $${converted.pnl.toFixed(2)}  [${converted.confluences.join(', ')}]`, 'info');
+    }
+  }
+
+  log(`\n✔ ${convertedTrades.length} trades ready to migrate.`, 'ok');
+
+  // Stats
+  const wins   = convertedTrades.filter(t => t.pnl > 0).length;
+  const losses = convertedTrades.filter(t => t.pnl < 0).length;
+  const be     = convertedTrades.filter(t => t.pnl === 0).length;
+  const totalPnL = convertedTrades.reduce((s, t) => s + t.pnl, 0);
+
+  document.getElementById('stats').innerHTML = `
+    <div class="stat">Total trades: <strong>${convertedTrades.length}</strong></div>
+    <div class="stat">Wins: <strong>${wins}</strong></div>
+    <div class="stat">Losses: <strong>${losses}</strong></div>
+    <div class="stat">BE: <strong>${be}</strong></div>
+    <div class="stat">Net PnL: <strong style="color:${totalPnL>=0?'#00d97e':'#f25f5c'}">${totalPnL>=0?'+':''}\$${Math.abs(totalPnL).toFixed(2)}</strong></div>
+  `;
+
+  if (convertedTrades.length > 0) {
+    document.getElementById('previewCard').style.display = 'block';
+  }
+}
+
+// ──────────────────────────────────────────────
+// MIGRATE
+// ──────────────────────────────────────────────
+
+function migrate() {
+  if (!convertedTrades.length) { log('Nothing to migrate.', 'warn'); return; }
+
+  // Load existing tj_trades
+  let existing = [];
+  try { existing = JSON.parse(localStorage.getItem('tj_trades') || '[]'); } catch {}
+  const existingIds = new Set(existing.map(t => t.id));
+
+  let added = 0, skipped = 0;
+  for (const t of convertedTrades) {
+    if (existingIds.has(t.id)) {
+      log(`  SKIP (duplicate id) ${t.date} ${t.symbol}`, 'warn');
+      skipped++;
+    } else {
+      existing.push(t);
+      existingIds.add(t.id);
+      added++;
+    }
+  }
+
+  // Sort by date ascending
+  existing.sort((a, b) => a.date.localeCompare(b.date));
+
+  localStorage.setItem('tj_trades', JSON.stringify(existing));
+
+  log(`\n✔ Migration complete! Added ${added} trades (${skipped} skipped as duplicates).`, 'ok');
+  log(`  Total trades now in new journal: ${existing.length}`, 'ok');
+  log(`\n  Open index.html in this same browser to see your trades.`, 'info');
+}
+</script>
+</body>
+</html>
