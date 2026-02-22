@@ -898,6 +898,7 @@ function switchConfTab(btn, cat) {
     g.classList.toggle('visible', cat === 'ALL' || g.dataset.cat === cat);
   });
   $('confSearch').value = '';
+  $('confGroups').scrollTop = 0;
 }
 
 function filterConfs(q) {
