@@ -160,7 +160,8 @@ textarea.fi { resize:vertical; min-height:70px; font-family:inherit; }
 .conf-tab { padding:5px 12px; border-radius:20px; font-size:11px; font-weight:600; cursor:pointer; background:var(--bgi); border:1px solid var(--b1); color:var(--t3); transition:all .15s; }
 .conf-tab:hover, .conf-tab.active { background:rgba(78,142,247,.12); border-color:rgba(78,142,247,.3); color:var(--blue); }
 .conf-groups { max-height:340px; overflow-y:auto; padding-right:4px; }
-.conf-group { margin-bottom:14px; }
+.conf-group { display:none; margin-bottom:14px; }
+.conf-group.visible { display:block; }
 .conf-group-hdr { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--blue); margin-bottom:8px; padding:0 2px; }
 .conf-items { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:4px; }
 .ci { display:flex; align-items:center; gap:7px; padding:6px 9px; border-radius:6px; cursor:pointer; transition:background .1s; border:1px solid transparent; }
@@ -688,7 +689,7 @@ function showView(v) {
 // ══════════════════════════════════════════════
 // TRADE MODAL
 // ══════════════════════════════════════════════
-function openModal(id=null) {
+function openModal(id=null, date=null) {
   editingId = id;
   $('modalTitle').textContent = id ? 'Edit Trade' : 'Log New Trade';
   const t = id ? trades.find(x=>x.id===id) : null;
@@ -696,7 +697,7 @@ function openModal(id=null) {
   if (t) populateForm(t);
   else {
     const now = new Date();
-    $('f-date').value = now.toISOString().slice(0,10);
+    $('f-date').value = date || now.toISOString().slice(0,10);
     $('f-time').value = now.toTimeString().slice(0,5);
   }
   $('tradeOverlay').classList.add('open');
@@ -719,6 +720,8 @@ function resetForm() {
   renderPills();
   document.querySelectorAll('.conf-group .ci').forEach(el => { el.classList.remove('sel'); el.querySelector('input').checked = false; });
   document.querySelectorAll('.emo-btn').forEach(el => el.classList.remove('on'));
+  const allTab = document.querySelector('.conf-tab');
+  if (allTab) switchConfTab(allTab, 'ALL');
 }
 
 function populateForm(t) {
@@ -1215,7 +1218,7 @@ function openDayPanel(dateStr) {
   const dayPnL = dayTrades.reduce((s,t)=>s+(t.pnl||0),0);
   $('dpTitle').textContent = dateStr + (dayTrades.length ? ` (${dayTrades.length} trades)` : '');
   if (!dayTrades.length) {
-    $('dpBody').innerHTML = `<div class="empty" style="padding:40px 20px"><div class="empty-icon">📭</div><h3>No trades</h3><p>No trades logged for this day.</p><button class="btn btn-primary btn-sm" onclick="openModal()">+ Log Trade</button></div>`;
+    $('dpBody').innerHTML = `<div class="empty" style="padding:40px 20px"><div class="empty-icon">📭</div><h3>No trades</h3><p>No trades logged for this day.</p><button class="btn btn-primary btn-sm" onclick="openModal(null, '${dateStr}')">+ Log Trade</button></div>`;
   } else {
     const pnlClass = dayPnL>=0?'pos':'neg';
     const pnlStr = (dayPnL>=0?'+$':'-$')+Math.abs(dayPnL).toFixed(2);
@@ -1237,7 +1240,8 @@ function openDayPanel(dateStr) {
             <button class="act-btn del btn-sm" title="Delete" onclick="deleteFromPanel('${t.id}','${t.date}')">🗑</button>
           </div>
         </div>`;
-      }).join('');
+      }).join('') +
+      `<div style="padding:14px 18px;"><button class="btn btn-primary btn-sm" style="width:100%" onclick="openModal(null, '${dateStr}')">+ Log Trade</button></div>`;
   }
   $('dayPanel').classList.add('open');
 }
